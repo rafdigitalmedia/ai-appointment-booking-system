@@ -56,7 +56,8 @@ IF Router (Is Slot Available?)
 
 ## 📸 Screenshots
 
-![Full Workflow](Screenshots/1-full-workflow.png)
+### Full Workflow
+![Full Workflow](1-full-workflow.png)
 
 ### Google Sheets Trigger
 ![Trigger Node](2-node-trigger.png)
