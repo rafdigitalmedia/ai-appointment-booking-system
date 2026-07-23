@@ -1,0 +1,531 @@
+{
+  "name": "AI Appointment Booking Syestem",
+  "nodes": [
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "models/gemini-3-flash-preview"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=Analyze this appointment request and extract structured information:\n\nREQUEST DETAILS:\n- Name: {{ $json[\"Full Name\"] }}\n- Email: {{ $json[\"Email\"] }}\n- Phone: {{ $json[\"Phone\"] }}\n- Service Type: {{ $json[\"Service Type\"] }}\n- Requested Date: {{ $json[\"Requested Date\"] }}\n- Requested Time: {{ $json[\"Requested Time\"] }}\n- Time Zone: {{ $json[\"Time Zone\"] }}\n- Message: {{ $json[\"Message\"] }}\n\nTASK:\n1. Extract and validate all contact information\n2. Identify service type and duration needed:\n   - Consultation: 30 minutes\n   - Demo: 45 minutes\n   - Strategy Call: 60 minutes\n   - Meeting: 90 minutes\n3. Assess urgency level (High/Medium/Low) based on message\n4. Parse requested date/time and convert to 24-hour format\n5. Identify any special requirements or notes\n6. Check if all required information is present\n\nRETURN as JSON:\n{\n  \"clientName\": \"string\",\n  \"email\": \"string\",\n  \"phone\": \"string\",\n  \"serviceType\": \"string\",\n  \"duration\": \"number (minutes)\",\n  \"requestedDate\": \"YYYY-MM-DD\",\n  \"requestedTime\": \"HH:MM (24-hour format)\",\n  \"timeZone\": \"string\",\n  \"urgency\": \"High|Medium|Low\",\n  \"specialRequirements\": \"string\",\n  \"hasAllInfo\": \"boolean\",\n  \"missingFields\": [\"array of missing fields\"]\n}\n\nONLY return the JSON object, no explanations."
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        528,
+        -336
+      ],
+      "id": "00a2a36e-ab89-470b-b6be-d02b4083f5cf",
+      "name": "AI Analysis",
+      "credentials": {
+        "googlePalmApi": {
+          "id": null,
+          "name": "",
+          "__aiGatewayManaged": true
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse AI output from previous node\nconst inputData = $input.first().json;\nlet aiAnalysis = {};\n\n// Try to parse AI response (it might be in different formats)\nif (inputData.content && inputData.content.parts && inputData.content.parts[0]) {\n  const textContent = inputData.content.parts[0].text;\n  try {\n    // Remove markdown code blocks if present\n    const cleanText = textContent.replace(/```json/g, '').replace(/```/g, '').trim();\n    aiAnalysis = JSON.parse(cleanText);\n  } catch (e) {\n    // If parsing fails, use the raw content\n    aiAnalysis = inputData;\n  }\n} else {\n  aiAnalysis = inputData;\n}\n\n// Extract date and time\nconst requestedDate = aiAnalysis.requestedDate || '2026-07-25';\nconst requestedTime = aiAnalysis.requestedTime || '14:00';\nconst timeZone = aiAnalysis.timeZone || 'EST';\nconst duration = aiAnalysis.duration || 30;\n\n// Create datetime object\nconst appointmentDateTime = new Date(`${requestedDate}T${requestedTime}`);\n\n// Check business hours (9 AM - 6 PM)\nconst hour = appointmentDateTime.getHours();\nconst dayOfWeek = appointmentDateTime.getDay();\n\nconst isBusinessHours = hour >= 9 && hour < 18;\nconst isWeekend = dayOfWeek === 0 || dayOfWeek === 6; // Sunday or Saturday\n\n// Calculate buffer time (15 minutes before and after)\nconst bufferBefore = new Date(appointmentDateTime.getTime() - 15 * 60000);\nconst bufferAfter = new Date(appointmentDateTime.getTime() + duration * 60000 + 15 * 60000);\n\n// Generate 3 alternative time slots (next available business days)\nconst alternatives = [];\nlet checkDate = new Date(appointmentDateTime);\n\nfor (let i = 1; i <= 7 && alternatives.length < 3; i++) {\n  checkDate.setDate(checkDate.getDate() + 1);\n  \n  // Skip weekends\n  if (checkDate.getDay() === 0 || checkDate.getDay() === 6) continue;\n  \n  // Add 10 AM, 2 PM, 4 PM slots\n  const slot1 = new Date(checkDate);\n  slot1.setHours(10, 0, 0, 0);\n  alternatives.push(slot1.toISOString());\n  \n  if (alternatives.length < 3) {\n    const slot2 = new Date(checkDate);\n    slot2.setHours(14, 0, 0, 0);\n    alternatives.push(slot2.toISOString());\n  }\n  \n  if (alternatives.length < 3) {\n    const slot3 = new Date(checkDate);\n    slot3.setHours(16, 0, 0, 0);\n    alternatives.push(slot3.toISOString());\n  }\n}\n\n// Return processed data\nreturn {\n  json: {\n    ...aiAnalysis,\n    appointmentDateTime: appointmentDateTime.toISOString(),\n    bufferBefore: bufferBefore.toISOString(),\n    bufferAfter: bufferAfter.toISOString(),\n    isBusinessHours,\n    isWeekend,\n    alternativeSlots: alternatives.slice(0, 3),\n    status: 'processing',\n    originalInput: $input.first().json\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        -336
+      ],
+      "id": "2eab43fa-de51-4568-b783-2baa664f76b5",
+      "name": "Process Appointment Data"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get events from Get many events node\nconst events = $('Check Calendar Availability').all();\n\n// Check if events actually have real data\nlet realEventCount = 0;\n\nfor (const event of events) {\n  // Only count if it has actual event ID (not empty object)\n  if (event.json && event.json.id && event.json.id !== '') {\n    realEventCount++;\n  }\n}\n\n// Get appointment data from earlier nodes\nconst appointmentData = $('Process Appointment Data').first().json;\n\nreturn [{ \n  json: { \n    ...appointmentData,\n    eventCount: realEventCount,\n    isSlotAvailable: realEventCount === 0\n  } \n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        736,
+        -64
+      ],
+      "id": "aebaeadd-e38c-4fb8-8079-32caa6e27fb3",
+      "name": "Count Events"
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "calendar": {
+          "__rl": true,
+          "value": "rafdigitalmedia@gmail.com",
+          "mode": "list",
+          "cachedResultName": "rafdigitalmedia@gmail.com"
+        },
+        "timeMin": "={{ $json[\"bufferBefore\"] }}",
+        "timeMax": "={{ $json[\"bufferAfter\"] }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        432,
+        -64
+      ],
+      "id": "315aeb51-f503-4d42-af7b-9efd4f656c6a",
+      "name": "Check Calendar Availability",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "O5ba8CgDdiq5A5wT",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "documentId": {
+          "__rl": true,
+          "value": "1hKyMygIRZYdbZJRtsfWKYjc5cU_kH4NunIWMNuCVMPo",
+          "mode": "list",
+          "cachedResultName": "AI Appointment Booking System Sheet",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1hKyMygIRZYdbZJRtsfWKYjc5cU_kH4NunIWMNuCVMPo/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1hKyMygIRZYdbZJRtsfWKYjc5cU_kH4NunIWMNuCVMPo/edit#gid=0"
+        },
+        "event": "rowAdded",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheetsTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        -336
+      ],
+      "id": "a30d9fae-156b-4c08-aa44-e087a684d801",
+      "name": "New Booking Request",
+      "credentials": {
+        "googleSheetsTriggerOAuth2Api": {
+          "id": "8AseiMaU1vhg0dYv",
+          "name": "Google Sheets Trigger account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.email }}",
+        "subject": "Appointment Slot Unavailable - Alternative Times",
+        "message": "=Dear {{ $json.clientName }},  Unfortunately, your requested time slot is not available.  Here are alternative times: 1. {{ $json.alternativeSlots[0] }} 2. {{ $json.alternativeSlots[1] }} 3. {{ $json.alternativeSlots[2] }}  Please let us know which time works best for you.  Best regards, Raf Digital Media",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1280,
+        -160
+      ],
+      "id": "b9a634a8-75e9-4ef7-8e88-3a1b2bdcf4a3",
+      "name": "Send Alternative Slots Email",
+      "webhookId": "63e960c4-f2fa-4b99-92b9-aa12a82e167e",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Lm2pg09FJ5xmK0dU",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "calendar": {
+          "__rl": true,
+          "value": "rafdigitalmedia@gmail.com",
+          "mode": "list",
+          "cachedResultName": "rafdigitalmedia@gmail.com"
+        },
+        "start": "={{ $json.appointmentDateTime }}",
+        "end": "={{ $json.bufferAfter }}",
+        "useDefaultReminders": false,
+        "additionalFields": {
+          "attendees": [],
+          "description": "=",
+          "summary": "=Consultation - {{ $json.clientName }}"
+        }
+      },
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        1280,
+        32
+      ],
+      "id": "15658129-31df-4614-a1a7-18fa897d13c6",
+      "name": "Book Appointment in Calendar",
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "O5ba8CgDdiq5A5wT",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1hKyMygIRZYdbZJRtsfWKYjc5cU_kH4NunIWMNuCVMPo",
+          "mode": "list",
+          "cachedResultName": "AI Appointment Booking System Sheet",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1hKyMygIRZYdbZJRtsfWKYjc5cU_kH4NunIWMNuCVMPo/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1hKyMygIRZYdbZJRtsfWKYjc5cU_kH4NunIWMNuCVMPo/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Booking Status": "Confirmed",
+            "Calendar Event ID": "={ $json.id }}",
+            "Confirmation sent": "Yes",
+            "Appointment Date": "={{ $json.appointmentDateTime }}",
+            "Appointed TIme": "={{ $json.appointmentDateTime }}",
+            "Email": "={{ $json.email }}"
+          },
+          "matchingColumns": [
+            "Email"
+          ],
+          "schema": [
+            {
+              "id": "Full Name",
+              "displayName": "Full Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Phone",
+              "displayName": "Phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Service Type",
+              "displayName": "Service Type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Requested Date",
+              "displayName": "Requested Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Time Zone",
+              "displayName": "Time Zone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Message",
+              "displayName": "Message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "AI Analysis",
+              "displayName": "AI Analysis",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Suggested Slots",
+              "displayName": "Suggested Slots",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Booking Status",
+              "displayName": "Booking Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Calendar Event ID",
+              "displayName": "Calendar Event ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Confirmation sent",
+              "displayName": "Confirmation sent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Appointment Date",
+              "displayName": "Appointment Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Appointed TIme",
+              "displayName": "Appointed TIme",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1488,
+        32
+      ],
+      "id": "ad1ba635-7874-49ef-9582-4fd790c59d19",
+      "name": "Update Booking Status",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "VRt3EurOs9u5ujlu",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "ceaaf978-32b0-454e-8118-876f2fcaa794",
+              "leftValue": "={{ $json.eventCount }}",
+              "rightValue": "1",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        992,
+        -64
+      ],
+      "id": "44e46d2a-6113-4f14-8bb6-6b4ef8160afa",
+      "name": "Is Slot Available?"
+    },
+    {
+      "parameters": {
+        "content": "**AI Appointment Booking System**\nAutomatically books appointments from Google Sheets.",
+        "height": 80,
+        "width": 288,
+        "color": "#212121"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        496,
+        -448
+      ],
+      "typeVersion": 1,
+      "id": "243aabe0-8016-43b7-83d4-f5ef52ba99ae",
+      "name": "Sticky Note"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "AI Analysis": {
+      "main": [
+        [
+          {
+            "node": "Process Appointment Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Appointment Data": {
+      "main": [
+        [
+          {
+            "node": "Check Calendar Availability",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Count Events": {
+      "main": [
+        [
+          {
+            "node": "Is Slot Available?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Calendar Availability": {
+      "main": [
+        [
+          {
+            "node": "Count Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "New Booking Request": {
+      "main": [
+        [
+          {
+            "node": "AI Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Book Appointment in Calendar": {
+      "main": [
+        [
+          {
+            "node": "Update Booking Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Slot Available?": {
+      "main": [
+        [
+          {
+            "node": "Send Alternative Slots Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Book Appointment in Calendar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "7f8e6432-7f89-4c61-835c-fd7c32291027",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "51b813e5251a4934016b27af445ca3e90ef59420bdd28652af11ea5ed66132bb"
+  },
+  "nodeGroups": [],
+  "id": "1DXBig71synULk6v",
+  "tags": []
+}
